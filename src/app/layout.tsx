@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "HR Prescreen — pré-qualification de CV",
+  title: "RH pré-qualification de CV par IA | Roxane Aina",
   description: "Compare une offre d'emploi et un CV, score le candidat et enregistre le résultat sans jamais stocker le texte du CV.",
 };
 
