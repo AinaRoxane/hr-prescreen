@@ -32,8 +32,9 @@ export async function POST(req: Request) {
       .insert({ score: result.score, result })
       .select('id')
       .single();
+    const saved = !error;
     if (error) console.error('db insert failed:', error.message);
-    return NextResponse.json({ id: data?.id ?? null, result });
+    return NextResponse.json({ id: data?.id ?? null, saved, result });
   } catch (e) {
     console.error('screening failed:', e instanceof Error ? e.message : 'unknown');
     return NextResponse.json({ error: 'L\'analyse a échoué, réessayez.' }, { status: 502 });
