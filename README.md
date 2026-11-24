@@ -1,6 +1,8 @@
 # HR Prescreen
 
-Compares a job ad and a CV, scores the candidate, and stores only the result. Live on [https://hr-prescreen.vercel.app/](https://hr-prescreen.vercel.app/) 
+A Next.js app that compares a job ad and a CV, scores the candidate, and stores only the result.
+
+**Live:** [https://hr-prescreen.vercel.app/](https://hr-prescreen.vercel.app/)
 
 ## Problem
 
@@ -24,6 +26,41 @@ graph LR
 5. The route stores only the score and the JSON result in Supabase. The CV text is never stored or logged.
 6. The browser shows the score and the saved / not saved notice.
 
+## Example output
+
+For a sample CV and job ad, the app returns a score and a structured JSON result:
+
+```
+Score: 68/100
+```
+
+The result contains four sections:
+
+- **Summary** — a short paragraph assessing the candidate.
+- **Strengths** — bullet points with evidence quoted from the CV.
+- **Gaps** — missing or unproven requirements.
+- **Interview questions** — targeted questions to validate the gaps.
+
+Example strengths and gaps for a FullStack Java / Spring / AngularJS candidate:
+
+```
+Strengths:
+* Expérience sur le stack Backend : Java, Spring / Spring Boot
+* Maîtrise avancée du Frontend web et des environnements legacy : AngularJS 1.x
+* Connaissance des protocoles de sécurité applicative : JWT, OAuth2 / Keycloak
+* Bonnes compétences en bases de données : MySQL
+* Connaissance de Docker / Kubernetes
+* Capacité d'adaptation sur du code existant / legacy
+* Expérience avec des environnements applicatifs existants
+
+Gaps:
+* Connaissance des architectures microservices: missing
+* Connaissance des pipelines CI/CD: missing
+* Autonome, rigoureux(se) et réactif(ve): missing
+* Bonne communication avec les équipes techniques: missing
+* Maîtrise de MongoDB: missing
+```
+
 ## Stack
 
 - Next.js 16.4.6, App Router, TypeScript
@@ -38,12 +75,12 @@ graph LR
 
 ## Design decisions and why
 
-- Zod validation of model output with one retry. The model must return a strict JSON object. If it does not, `screenCandidate` retries once before failing.
-- Service role key server-side only. `supabase.ts` builds the client with `SUPABASE_SERVICE_ROLE_KEY`. The client page imports nothing from `supabase.ts`.
-- RLS on with no public policies. `supabase/schema.sql` enables row level security, revokes all access from `anon` and `authenticated`, and grants access only to `service_role`.
-- Only results stored. The `screenings` table keeps `id`, `created_at`, `score`, and `result`. CV and job-ad text are never inserted or logged.
-- Rate limiting. `rateLimit.ts` allows 5 requests per minute per IP. It is an in-memory map: it resets on redeploy and works per process. Trust `x-forwarded-for` only behind the hosting platform.
-- Prompt-injection defence. The system prompt tells the model to treat the text between `<offre>` and `<cv>` as data and ignore instructions inside it. Closing tags in user text are escaped, and the rule is repeated at the end of the user message.
+- **Zod validation of model output with one retry.** The model must return a strict JSON object. If it does not, `screenCandidate` retries once before failing.
+- **Service role key server-side only.** `supabase.ts` builds the client with `SUPABASE_SERVICE_ROLE_KEY`. The client page imports nothing from `supabase.ts`.
+- **RLS on with no public policies.** `supabase/schema.sql` enables row level security, revokes all access from `anon` and `authenticated`, and grants access only to `service_role`.
+- **Only results stored.** The `screenings` table keeps `id`, `created_at`, `score`, and `result`. CV and job-ad text are never inserted or logged.
+- **Rate limiting.** `rateLimit.ts` allows 5 requests per minute per IP. It is an in-memory map: it resets on redeploy and works per process. Trust `x-forwarded-for` only behind the hosting platform.
+- **Prompt-injection defence.** The system prompt tells the model to treat the text between `<offre>` and `<cv>` as data and ignore instructions inside it. Closing tags in user text are escaped, and the rule is repeated at the end of the user message.
 
 ## Security notes
 
@@ -54,9 +91,9 @@ graph LR
 
 ## What the model got wrong
 
-The first prompt version scored a CV 90/100 against an ad whose essential requirement (AngularJS 1.x) the CV only covered through a recent online course. The model also listed Docker as missing though it was on the CV, and listed autonomy and communication as strengths without evidence in the CV.
+On my first test, the model scored a CV 90/100 against an ad whose essential requirement (AngularJS 1.x) the CV covered only through a recent online course. It also listed Docker as missing though it was on the CV, and listed autonomy and communication as strengths without evidence.
 
-Fix: a stricter prompt with a scoring rubric, a rule to base everything on the CV text, and temperature 0.2. Score after the fix: 95/100.
+I added a scoring rubric, a rule to use only the CV text, and temperature 0.2. The same test then scored 95/100. The rubric caps such a case at 75, so the model ignored its own rule: prompt instructions are suggestions, not guarantees.
 
 ## Bugs I hit and how I diagnosed them
 
