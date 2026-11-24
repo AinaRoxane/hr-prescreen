@@ -1,69 +1,64 @@
-import Image from "next/image";
+'use client';
+import { useState } from 'react';
+
+type Result = {
+  score: number;
+  summary: string;
+  strengths: string[];
+  gaps: string[];
+  questions: string[];
+};
 
 export default function Home() {
+  const [jobAd, setJobAd] = useState('');
+  const [cv, setCv] = useState('');
+  const [result, setResult] = useState<Result | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  async function analyze() {
+    setLoading(true);
+    setError(null);
+    setResult(null);
+    try {
+      const res = await fetch('/api/screen', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jobAd, cv }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? 'Erreur inconnue');
+      setResult(data.result);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Erreur inconnue');
+    } finally {
+      setLoading(false);
+    }
+  }
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert h-5 w-[100px]"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the{" "}
-            <code className="rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-[0.9em] dark:bg-white/[.08]">
-              page.tsx
-            </code>{" "}
-            file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert h-[14px] w-4"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={14}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
-    </div>
+    <main className='mx-auto max-w-3xl space-y-4 p-6'>
+      <h1 className='text-2xl font-bold'>Pré-qualification RH</h1>
+      <p className='text-sm text-gray-600'>Données fictives uniquement. Ne collez pas de vrais CV.</p>
+
+      <textarea data-testid='job-ad' className='h-40 w-full rounded border p-2' placeholder='Offre d&apos;emploi' value={jobAd} onChange={(e) => setJobAd(e.target.value)} />
+      <textarea data-testid='cv' className='h-40 w-full rounded border p-2' placeholder='CV du candidat' value={cv} onChange={(e) => setCv(e.target.value)} />
+
+      <button onClick={analyze} disabled={loading} className='rounded bg-black px-4 py-2 text-white disabled:opacity-50'>
+        {loading ? 'Analyse...' : 'Analyser'}
+      </button>
+
+      {error && <p role='alert' data-testid='error' className='text-red-600'>{error}</p>}
+
+      {result && (
+        <section className='space-y-3 rounded border p-4'>
+          <p className='text-xl font-semibold'>Score: <span data-testid='score'>{result.score}/100</span></p>
+          <p>{result.summary}</p>
+          <div><h2 className='font-semibold'>Points forts</h2><ul className='list-disc pl-5'>{result.strengths.map((s) => <li key={s}>{s}</li>)}</ul></div>
+          <div><h2 className='font-semibold'>Écarts</h2><ul className='list-disc pl-5'>{result.gaps.map((s) => <li key={s}>{s}</li>)}</ul></div>
+          <div><h2 className='font-semibold'>Questions d&apos;entretien</h2><ul className='list-disc pl-5'>{result.questions.map((s) => <li key={s}>{s}</li>)}</ul></div>
+        </section>
+      )}
+    </main>
   );
 }
