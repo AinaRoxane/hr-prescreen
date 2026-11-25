@@ -1,127 +1,124 @@
 # HR Prescreen
 
-A Next.js app that compares a job ad and a CV, scores the candidate, and stores only the result.
+Compares a job ad with a CV and returns a score, a requirement checklist, strengths, gaps and interview questions. It stores only the result, never the CV text.
 
-**Live:** [https://hr-prescreen.vercel.app/](https://hr-prescreen.vercel.app/)
+Live demo: https://hr-prescreen.vercel.app/
+
+**Use fake data only.** The output is advisory. It is not a hiring decision, and a human must review it.
 
 ## Problem
 
-Recruiters prescreen CVs against job ads by hand. It is slow and inconsistent. This project automates the first pass: it returns a score, a summary, strengths, gaps, and interview questions, without storing the CV text.
+Prescreening a CV against a job ad is repetitive. This project tests how far a language model can help with a first pass, and how much of the judgement must stay in code. The main lesson: a model is good at extracting requirements and evidence, and bad at applying scoring rules.
 
 ## How it works
 
 ```mermaid
 graph LR
-  A[Browser] -->|POST job ad + CV| B[Next.js API route /api/screen]
-  B -->|calls model| C[Cloudflare AI Gateway]
-  C -->|returns JSON| B
-  B -->|stores score + JSON| D[Supabase Postgres]
-  B -->|returns score| A
+  A[Browser] -->|job ad + CV| B[Next.js API route /api/screen]
+  B -->|prompt| C[Cloudflare AI Gateway]
+  C -->|requirement checklist as JSON| B
+  B -->|verify evidence, compute score| B
+  B -->|score + result only| D[Supabase Postgres]
+  B -->|result + saved flag| A
 ```
 
-1. The recruiter pastes a job ad and a CV in the browser.
-2. The Next.js API route validates the input with Zod (50 to 8000 characters per field).
-3. The route calls the model through Cloudflare AI Gateway.
-4. The model output is validated with Zod. On failure, the call is retried once.
-5. The route stores only the score and the JSON result in Supabase. The CV text is never stored or logged.
-6. The browser shows the score and the saved / not saved notice.
+1. The user pastes a job ad and a CV (50 to 8000 characters each).
+2. The API route rate-limits and validates the input with Zod.
+3. The route asks the model, through Cloudflare AI Gateway, for a checklist: each requirement of the ad, whether it is essential, a status (`confirmed`, `partial`, `training`, `missing`), and a quote copied from the CV as evidence.
+4. The output is validated with Zod. If it is invalid, the call is retried once.
+5. Code checks that every evidence quote really appears in the CV. A quote that does not appear downgrades that item to `missing`.
+6. Code computes the score and derives strengths and gaps from the verified checklist.
+7. The route stores the score and the result in Supabase, then returns the result with a `saved` flag. The UI shows whether the result was saved.
 
-## Example output
+## Scoring
 
-For a sample CV and job ad, the app returns a score and a structured JSON result:
+The model does not produce a score. `src/lib/scoring.ts` does.
 
-```
-Score: 68/100
-```
+- Essential requirements weigh 3, others weigh 1.
+- Points per status: confirmed 1, partial 0.5, training 0.4, missing 0.
+- If an essential requirement is missing, the score is capped at 69.
+- If an essential requirement is only partial or only learned in training, the score is capped at 75.
+- If the model marks no requirement as essential, the score is capped at 85.
 
-The result contains four sections:
-
-- **Summary** — a short paragraph assessing the candidate.
-- **Strengths** — bullet points with evidence quoted from the CV.
-- **Gaps** — missing or unproven requirements.
-- **Interview questions** — targeted questions to validate the gaps.
-
-Example strengths and gaps for a FullStack Java / Spring / AngularJS candidate:
-
-```
-Strengths:
-* Expérience sur le stack Backend : Java, Spring / Spring Boot
-* Maîtrise avancée du Frontend web et des environnements legacy : AngularJS 1.x
-* Connaissance des protocoles de sécurité applicative : JWT, OAuth2 / Keycloak
-* Bonnes compétences en bases de données : MySQL
-* Connaissance de Docker / Kubernetes
-* Capacité d'adaptation sur du code existant / legacy
-* Expérience avec des environnements applicatifs existants
-
-Gaps:
-* Connaissance des architectures microservices: missing
-* Connaissance des pipelines CI/CD: missing
-* Autonome, rigoureux(se) et réactif(ve): missing
-* Bonne communication avec les équipes techniques: missing
-* Maîtrise de MongoDB: missing
-```
+The weights and caps are my own choices. They are easy to change and covered by unit tests.
 
 ## Stack
 
-- Next.js 16.4.6, App Router, TypeScript
-- React 19.3.0
-- Zod 4.6.7
-- @supabase/supabase-js 2.109.0
-- Vitest 4.1.12
-- Playwright 1.65.1
-- Tailwind CSS 4.3.3
-- Cloudflare AI Gateway / Workers AI
-- Supabase Postgres
+Next.js (App Router) and TypeScript, Zod, Supabase Postgres, Cloudflare AI Gateway with Workers AI, Tailwind CSS, Vitest, Playwright, GitHub Actions, Vercel. Exact versions are in `package.json`. I tested with `@cf/meta/llama-3.3-70b-instruct-fp8-fast`; the model is set with the `CF_MODEL` variable.
 
-## Design decisions and why
+## Design decisions
 
-- **Zod validation of model output with one retry.** The model must return a strict JSON object. If it does not, `screenCandidate` retries once before failing.
-- **Service role key server-side only.** `supabase.ts` builds the client with `SUPABASE_SERVICE_ROLE_KEY`. The client page imports nothing from `supabase.ts`.
-- **RLS on with no public policies.** `supabase/schema.sql` enables row level security, revokes all access from `anon` and `authenticated`, and grants access only to `service_role`.
-- **Only results stored.** The `screenings` table keeps `id`, `created_at`, `score`, and `result`. CV and job-ad text are never inserted or logged.
-- **Rate limiting.** `rateLimit.ts` allows 5 requests per minute per IP. It is an in-memory map: it resets on redeploy and works per process. Trust `x-forwarded-for` only behind the hosting platform.
-- **Prompt-injection defence.** The system prompt tells the model to treat the text between `<offre>` and `<cv>` as data and ignore instructions inside it. Closing tags in user text are escaped, and the rule is repeated at the end of the user message.
-
-## Security notes
-
-- `.env.local` is ignored and never committed. Copy `.env.example` and fill in the values locally.
-- No `NEXT_PUBLIC_` variables. Secrets are read only in server files.
-- Error messages shown to the user are generic. Internals go to `console.error` only.
-- No CV or job-ad text is logged or stored.
+- **Rules in code, not in the prompt.** See the next section for why.
+- **Evidence must exist in the CV.** Quotes are compared after lowercasing and collapsing whitespace. Anything shorter than 8 characters or not found is rejected.
+- **Validate model output with Zod.** Retries happen only on network errors, 429, 5xx and invalid output. Other 4xx errors, such as a wrong token, are not retried.
+- **Service role key stays on the server.** The browser never imports the Supabase client, and no variable has a `NEXT_PUBLIC_` prefix.
+- **Row Level Security on, no public policies.** `supabase/schema.sql` revokes all access from `anon` and `authenticated` and grants access only to `service_role`.
+- **Store only results.** The `screenings` table keeps `id`, `created_at`, `score` and `result`. CV and job-ad text are not stored or logged.
+- **Rate limiting.** 5 requests per minute per IP, in memory. It is per instance and resets on redeploy, so it is only a partial defence.
+- **Prompt-injection defences.** The prompt tells the model to treat the ad and CV as data. Closing tags in user text are escaped, and the rule is repeated after the user content. The evidence check also limits what an injected instruction can claim.
 
 ## What the model got wrong
 
-On my first test, the model scored a CV 90/100 against an ad whose essential requirement (AngularJS 1.x) the CV covered only through a recent online course. It also listed Docker as missing though it was on the CV, and listed autonomy and communication as strengths without evidence.
+I ran the same CV against the same ad in four versions. The CV covers AngularJS 1.x only through a recent online course, and AngularJS is the essential requirement of the ad.
 
-I added a scoring rubric, a rule to use only the CV text, and temperature 0.2. The same test then scored 95/100. The rubric caps such a case at 75, so the model ignored its own rule: prompt instructions are suggestions, not guarantees.
+| Version | Score |
+| --- | --- |
+| First prompt | 90 |
+| Prompt with a scoring rubric, a rule to use only the CV text, temperature 0.2 | 95 |
+| Long, detailed prompt with explicit caps | 85 |
+| Model returns a checklist, code verifies evidence and computes the score | 68 |
+
+The prompt rules say such a case is capped at 75. The model ignored its own cap three times and the score moved in the wrong direction once. Prompt instructions are suggestions, not guarantees. Moving the rules into code made the score follow them.
+
+Other mistakes in earlier versions: it listed Docker as missing though it was on the CV, and it listed autonomy and communication as strengths without evidence.
+
+## Known limits
+
+- **The evidence check proves a quote exists, not that it supports the claim.** In my test, the model marked AngularJS as confirmed because a skills list mentions it, although the CV says it comes from a course. It also marked Docker and Kubernetes as confirmed with a quote that only mentions Docker. A stricter check would be needed.
+- **Soft skills appear as requirements.** The model sometimes lists "autonomous" or "good communication" as requirements. They end up as `missing`, because a CV rarely proves them, which lowers scores unfairly.
+- **Tested on few cases.** I tested mainly with one CV and one ad. I have not yet run a systematic prompt-injection test, an unrelated-CV test or a stability test with repeated runs.
+- **Models can paraphrase when asked to quote.** A valid item can be downgraded to `missing`, so scores lean conservative.
+- Prompt and output are in French only. There is no PDF upload, no user accounts and no human review step.
+- CV text is sent to Cloudflare Workers AI for analysis. Do not use real personal data.
 
 ## Bugs I hit and how I diagnosed them
 
-- The AI Gateway required an extra authentication header (`cf-aig-authorization`). Added it to the request headers.
-- A stale exported shell variable overrode `.env.local`. Next.js does not override existing environment variables, so the app used a wrong Supabase URL. Unset the shell variable.
-- Postgres returned "permission denied" until I granted privileges to `service_role` and revoked default access from `anon` and `authenticated`. See `supabase/schema.sql`.
-- A Playwright strict-mode violation because Next.js adds its own `role=alert` element. Fixed by asserting on `data-testid` instead.
+- **Gateway authentication.** The AI Gateway rejected requests until I added the `cf-aig-authorization` header. A direct call to the Workers AI API worked, which showed the token was valid and the gateway was the problem.
+- **Stale shell variable.** After `source .env.local`, the exported variables overrode the file, because Next.js does not override variables that already exist. The app kept using a wrong Supabase URL until I unset them.
+- **Database permissions.** Postgres returned "permission denied" until I granted privileges to `service_role`. I then revoked the default access from `anon` and `authenticated` and recorded everything in `supabase/schema.sql`.
+- **Playwright strict mode.** Next.js adds its own `role="alert"` element, so a generic selector matched two elements. The test now uses a `data-testid`.
+- **First Vercel deploy returned 502.** The route logs the upstream status code, and the runtime logs showed a 401 from the gateway.
+- **Schema mismatch.** After I changed the prompt to return a checklist, validation still used the old schema, so every response failed. The route logs the failure reason, which made the cause easy to find.
 
 ## Testing and CI
 
-- Unit tests with Vitest: `src/lib/schema.test.ts`, `src/lib/ai.test.ts`, `src/app/api/screen/route.test.ts`.
-- End-to-end tests with Playwright using a mocked API, so no AI quota is spent: `e2e/screen.spec.ts`.
-- GitHub Actions runs lint, tests, build, and e2e on push and pull request: `.github/workflows/ci.yml`.
+- Unit tests with Vitest: `src/lib/schema.test.ts`, `src/lib/scoring.test.ts`, `src/lib/ai.test.ts`, `src/app/api/screen/route.test.ts`. Scoring tests need no model and cover the caps and the evidence check.
+- End-to-end tests with Playwright in `e2e/screen.spec.ts`. The API is mocked, so no AI quota is spent.
+- GitHub Actions runs lint, unit tests and e2e tests on every push and pull request (`.github/workflows/ci.yml`). It needs no secrets.
 
-## Limits and next steps
+## Next steps
 
-- Rate limit is in-memory per process and resets on redeploy.
-- No user accounts yet.
-- No human review step.
-- No PDF upload.
+- A stricter evidence check, for example by asking the model to quote only from work experience and not from skills lists.
+- Treat soft skills separately from technical requirements.
+- A shared rate limiter such as Redis, because the in-memory one is per instance.
+- Supabase Auth with per-user policies.
+- PDF upload with server-side text extraction.
+- A human review step before any result is used.
 
 ## Run it locally
 
-1. Copy `.env.example` to `.env.local` and fill in the values. Do not commit `.env.local`.
-2. Run `npm install`.
-3. Run `npm run dev`.
-4. Open http://localhost:3000.
+1. Copy `.env.example` to `.env.local` and fill in the values. Never commit `.env.local`.
+2. `npm install`
+3. `npm run dev`, then open http://localhost:3000.
+4. `npm run lint`, `npm run test`, `npm run e2e` and `npm run build` run the checks.
 
-## Deploy
+Required variables: `CF_ACCOUNT_ID`, `CF_GATEWAY_ID`, `CF_API_TOKEN`, `CF_AIG_TOKEN`, `CF_MODEL`, `SUPABASE_URL` (the project root, without `/rest/v1/`) and `SUPABASE_SERVICE_ROLE_KEY`.
 
-Deploy the Next.js application to your hosting platform. Set the environment variables from `.env.example`. Run `npm run build`.
+If you export these variables in your terminal with `source`, run `unset` on them before you start the server again, or restart the terminal.
+
+## Deploy (Vercel)
+
+1. Push to GitHub and import the repository in Vercel.
+2. Run `supabase/schema.sql` in the Supabase SQL editor.
+3. Add the seven variables above. Store the tokens and the service role key as Secrets. Do not use a `NEXT_PUBLIC_` prefix.
+4. Redeploy after any variable change. Vercel applies variables only to new deployments.
